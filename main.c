@@ -1,9 +1,23 @@
 #include "lcd.h"
+#define TRUE 1
+#define FALSE 0
 
-unsigned long pcount=0;    // used in interrupt to count PER_COUNTS
-unsigned char calc_bit=0;
-unsigned int RPM_Value=0;
-unsigned int VOLT=0;
+unsigned int task0_counter=0;
+unsigned int task1_counter=0;
+unsigned int task2_counter=0;
+
+#define TASK0_COUNTER_MAX 1
+#define TASK1_COUNTER_MAX 1
+#define TASK2_COUNTER_MAX 1000
+
+
+volatile unsigned char task0_enable=TRUE;
+volatile unsigned char task2_enable=TRUE;
+volatile unsigned char task2_go=FALSE;
+
+
+volatile unsigned int VOLT=0;
+volatile unsigned int RPM_Value=0;
 unsigned char settings_on=0;
 unsigned char trip_status=0;
 unsigned char prev_trip_status=0;
@@ -13,9 +27,9 @@ unsigned char Vo_HT_delay=0;
 unsigned int LOW_volt=250;
 unsigned char Vo_LT_delay=0;
 
-unsigned int HIGH_freq=60;
+unsigned int HIGH_freq=55;
 unsigned char Fq_HT_delay=0;
-unsigned int LOW_freq=0;
+unsigned int LOW_freq=45;
 unsigned char Fq_LT_delay=0;
 
 #define TRIP1 LATCbits.LC1
@@ -31,7 +45,76 @@ unsigned char Fq_LT_delay=0;
 #define UP_VAL 2
 #define RIGHT_VAL 3
 #define ENTER_VAL 4
-#define FALSE 0
+
+
+void setup_multitasking(void)
+{
+
+    TMR1CS=0;
+    T1CKPS0=0;
+    T1CKPS1=0;
+#define  TICKS_BETWEEN_INTERRUPTS      1000
+#define  INTERRUPT_OVERHEAD            19
+#define TMR1RESET (0x0000-(TICKS_BETWEEN_INTERRUPTS-INTERRUPT_OVERHEAD))
+#define TMR1RESET_HIGH TMR1RESET >> 8
+#define TMR1RESET_LOW TMR1RESET & 0xFF
+    TMR1ON=0;
+    TMR1H=TMR1RESET_HIGH;
+    TMR1L=TMR1RESET_LOW;
+    TMR1ON=1;
+    TMR1IF=0;
+    TMR1IE=1;
+    PEIE=1;
+    GIE=1;
+}
+
+void interrupt isr(void)
+{
+
+    if (INT0IF && INT0IE)
+    {
+        RPM_Value++;
+        INT0IF = 0;
+
+    }
+
+    if (TMR1IF && TMR1IE)
+    {
+
+        TMR1IF=0;
+        TMR1ON=0;
+        TMR1H=TMR1RESET_HIGH;
+        TMR1L=TMR1RESET_LOW;
+        TMR1ON=1;
+        task0_counter++;
+        if (task0_counter>=TASK0_COUNTER_MAX)
+        {
+            task0_counter=0;
+            if (task0_enable==TRUE)
+            {
+
+    ADON=1;
+    GODONE=1;
+    while(GODONE);
+    ADON=0;
+    VOLT=(unsigned int)(50*(ADRES)/1023)*10;
+
+
+            }
+        }
+
+        task2_counter++;
+        if (task2_counter>=TASK2_COUNTER_MAX)
+        {
+            task2_counter=0;
+            if (task2_enable==TRUE)
+            {
+
+                task2_go=TRUE;
+            }
+        }
+    }
+}
 
 
 void lcd_First_stage()
@@ -50,59 +133,22 @@ void lcd_First_stage()
     lcd_puts ("V");
 }
 
+
+
+
 void initADC()
 {
-   //We use default value for +/- Vref
-
-   //VCFG0=0,VCFG1=0
-   //That means +Vref = Vdd (5v) and -Vref=GEN
-
-   //Port Configuration
-   //We also use default value here too
-   //All ANx channels are Analog
-
-   /*
-      ADCON2
-
-      *ADC Result Right Justified.
-      *Acquisition Time = 2TAD
-      *Conversion Clock = 32 Tosc
-   */
-
-   ADCON2=0b10001010;
-
-
-    ADCON1bits.VCFG1=0;        //VCFG0=0,VCFG1=0
+    ADCON2=0b10001010;
+    ADCON1bits.VCFG1=0;
     ADCON1bits.VCFG0=0;
-
-    ADCON1bits.PCFG0 = 0;          // These 4 settings below determines the analog or digital input
-    ADCON1bits.PCFG1 = 1;          // In our case we are making all the pins digital
-    ADCON1bits.PCFG2 = 1;         // by setting them as 1111
-    ADCON1bits.PCFG3 = 1;         // Check with the datasheet for a nice desc of these bits and config.
-
-}
-
-
-void select_adc()
-{
-
-
-   ADCON0=0x00;
+    ADCON1bits.PCFG0 = 0;
+    ADCON1bits.PCFG1 = 1;
+    ADCON1bits.PCFG2 = 1;
+    ADCON1bits.PCFG3 = 1;
+    ADCON0=0x00;
     CHS3=CHS2=CHS1=CHS0=0;
- 
 
-   ADON=1;  //switch on the adc module
-
-   GODONE=1;  //Start conversion
-
-   while(GODONE); //wait for the conversion to finish
-
-   ADON=0;  //switch off adc
-
-
-    VOLT=(unsigned int)(50*(ADRES)/1023)*10;
 }
-
 
 
 unsigned char get_key()
@@ -196,7 +242,7 @@ void check_TRIPPing()
 
     }
 
-	else  BUZZER = 0;
+else BUZZER = 0;
 
         if (trip_status != prev_trip_status)
         {
@@ -252,12 +298,9 @@ void check_TRIPPing()
 
 void main()
 {
-
-
     TRISC=0XF0;
-    TRISB=0x00;
+    TRISB=0X01;;
     TRISA=0x0FF;
-
 
     initLCD();
     lcd_First_stage();
@@ -269,14 +312,15 @@ void main()
     unsigned char mode_pressed=0;
 
 
+    INT0IE = 1;
+    INTEDG0 = 1;
+    setup_multitasking();
+
 
     while(1)
     {
 
-
-
-
-        if ((key=get_key()) !=FALSE)
+if ((key=get_key()) !=FALSE)
 
         {
             settings_on =1;
@@ -488,32 +532,31 @@ void main()
 
 
 
-
- 
-            select_adc();
-
-            if (settings_on ==0)
+            if (settings_on ==0 && task2_go==TRUE){
                 check_TRIPPing();
 
-            if (settings_on ==0 && trip_status ==0)
-            {
+if (trip_status !=0){
+task2_go=FALSE;
+RPM_Value=0;
+}
+
+}
+
+
+
+        if (task2_go==TRUE && settings_on ==0 && trip_status ==0)
+        {
+
+
+            	task2_go=FALSE;
                 LCD_goto(2,0);
                 LCD_num (RPM_Value);
                 LCD_goto(2,8);
-                LCD_num (VOLT);
+                LCD_num (VOLT);            	
+				RPM_Value=0;
+        }
 
-            }
 
-            TMR1L = 0;
-            TMR1H = 0;
-            calc_bit=0;
-            TMR1ON = 1;
-
-       
 
     }
-
-
-
-
 }
